@@ -13,21 +13,13 @@
 # limitations under the License.
 
 from typing import AsyncIterator, AsyncGenerator
-from unittest import mock
 import json
-from argparse import Namespace  # TODO: check whether installed
 
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
-from vllm.entrypoints.openai.serving_completion import (
-    OpenAIServingCompletion,
-    BaseModelPath,
-)
-from vllm.entrypoints.openai.serving_chat import OpenAIServingChat
-from vllm.entrypoints.openai.serving_embedding import OpenAIServingEmbedding
-from vllm.entrypoints.openai.serving_tokenization import OpenAIServingTokenization
-from vllm import RequestOutput, AsyncLLMEngine
-from vllm.config import ModelConfig
+from vllm import RequestOutput
+from vllm.utils import FlexibleArgumentParser
+from vllm.entrypoints.openai.cli_args import make_arg_parser
 
 from huggingfaceserver.vllm.vllm_model import VLLMModel
 from kserve.logging import logger
@@ -48,6 +40,7 @@ from kserve.protocol.rest.openai.types.openapi import (
     ChatCompletionResponse,
     ChatCompletionLogProb,
 )
+import asyncio
 
 from vllm_mock_outputs import (
     opt_chat_cmpl_chunks,
@@ -61,16 +54,23 @@ from vllm_mock_outputs import (
     opt_cmpl_chunks_with_logit_bias,
     opt_chat_cmpl_chunks_with_logit_bias,
     opt_cmpl_chunks_with_echo_logprobs,
-)  # TODO: can not import?
+)
 
 
 @pytest.fixture(scope="module")
 def vllm_opt_model():
-    model_id = "facebook/opt-125m"
-    dtype = "float32"
-    max_model_len = 512
-    base_model_paths = [
-        BaseModelPath(name=name, model_path=model_id) for name in [model_id]
+    args = [
+        # use half precision for speed and memory savings in CI environment
+        "--model",
+        "facebook/opt-125m",
+        "--dtype",
+        "float32",
+        "--max-model-len",
+        "512",
+        "--served-model-name",
+        "opt-125m",
+        "--response-role",
+        "assistant",
     ]
 
     async def mock_get_model_config():
@@ -91,42 +91,15 @@ def vllm_opt_model():
     engine_client.get_model_config = mock_get_model_config
 
     def mock_load(self) -> bool:
-        self.engine_client = engine_client
-
-        self.openai_serving_chat = OpenAIServingChat(
-            self.engine_client,
-            engine_client.get_model_config(),
-            base_model_paths,
-            "assistant",
-        )
-        self.openai_serving_completion = OpenAIServingCompletion(
-            self.engine_client,
-            engine_client.get_model_config(),
-            base_model_paths,
-        )
-        self.openai_serving_embedding = OpenAIServingEmbedding(
-            self.engine_client,
-            engine_client.get_model_config(),
-            base_model_paths,
-        )
-        self.openai_serving_tokenization = OpenAIServingTokenization(
-            self.engine_client,
-            engine_client.get_model_config(),
-            base_model_paths,
-        )
-
+        asyncio.run(self.setup_engine())
         self.ready = True
         return self.ready
 
     mp = MonkeyPatch()
     mp.setattr(VLLMModel, "load", mock_load)
-
-    args = Namespace(model_name="opt-125m", response_role="assistant")
-    model = VLLMModel(
-        args,
-    )
+    model = VLLMModel(args)
     model.load()
-    yield model, engine_client  # TODO: Why we need to yield engine_client?
+    yield model
     model.stop()
     mp.undo()
 
@@ -266,7 +239,8 @@ class TestChatCompletions:
     async def test_vllm_chat_completion_facebook_opt_model_without_request_id(
         self, vllm_opt_model
     ):
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         request_id = None
 
         async def mock_generate(*args, **kwargs) -> AsyncIterator[RequestOutput]:
@@ -277,7 +251,7 @@ class TestChatCompletions:
                 cmpl_chunk.request_id = args[2]
                 yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         messages = [
             {
@@ -325,7 +299,8 @@ class TestChatCompletions:
     async def test_vllm_chat_completion_facebook_opt_model_with_max_token(
         self, vllm_opt_model
     ):
-        opt_model, engine_client = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         request_id = "cmpl-d771287a234c44498e345f0a429d6691"
 
         async def mock_generate(*args, **kwargs) -> AsyncIterator[RequestOutput]:
@@ -381,7 +356,8 @@ class TestChatCompletions:
     async def test_vllm_chat_completion_facebook_opt_model_should_set_correct_max_tokens(
         self, vllm_opt_model
     ):
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         max_tokens_arg = None
 
         async def mock_generate(*args, **kwargs) -> AsyncIterator[RequestOutput]:
@@ -392,7 +368,7 @@ class TestChatCompletions:
                 cmpl_chunk.request_id = args[2]
                 yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         messages = [
             {
@@ -434,14 +410,15 @@ class TestChatCompletions:
         self, vllm_opt_model
     ):
         model_name = "opt-125m"
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
 
         async def mock_generate(*args, **kwargs) -> AsyncIterator[RequestOutput]:
             for cmpl_chunk in opt_chat_cmpl_chunks:
                 cmpl_chunk.request_id = args[2]
                 yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         messages = [
             {
@@ -481,7 +458,8 @@ class TestChatCompletions:
     async def test_vllm_chat_completion_facebook_opt_model_with_logprobs(
         self, vllm_opt_model
     ):
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         request_id = "cmpl-d771287a234c44498e345f0a429d6691"
         model_name = "opt-125m"
 
@@ -490,7 +468,7 @@ class TestChatCompletions:
                 cmpl_chunk.request_id = args[2]
                 yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         messages = [
             {
@@ -789,7 +767,8 @@ class TestChatCompletions:
     async def test_vllm_chat_completion_facebook_opt_model_with_logprobs_stream(
         self, vllm_opt_model
     ):
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         model_name = "opt-125m"
 
         async def mock_generate(*args, **kwargs) -> AsyncIterator[RequestOutput]:
@@ -797,7 +776,7 @@ class TestChatCompletions:
                 cmpl_chunk.request_id = args[2]
                 yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         messages = [
             {
@@ -1050,13 +1029,14 @@ class TestChatCompletions:
     async def test_vllm_chat_completion_facebook_opt_model_with_max_tokens_exceed_model_len(
         self, vllm_opt_model
     ):
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
 
         async def mock_generate(*args, **kwargs) -> AsyncIterator[RequestOutput]:
             for cmpl_chunk in opt_chat_cmpl_chunks:
                 yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         messages = [
             {
@@ -1083,7 +1063,8 @@ class TestChatCompletions:
     async def test_vllm_chat_completion_facebook_opt_model_with_logit_bias(
         self, vllm_opt_model
     ):
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         request_id = "cmpl-d771287a234c44498e345f0a429d6691"
 
         async def mock_generate(*args, **kwargs) -> AsyncIterator[RequestOutput]:
@@ -1091,7 +1072,7 @@ class TestChatCompletions:
                 cmpl_chunk.request_id = args[2]
                 yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         messages = [
             {
@@ -1143,7 +1124,8 @@ class TestCompletions:
     async def test_vllm_completion_facebook_opt_model_without_request_id(
         self, vllm_opt_model
     ):
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         request_id = None
 
         async def mock_generate(*args, **kwargs) -> AsyncIterator[RequestOutput]:
@@ -1154,7 +1136,7 @@ class TestCompletions:
                 cmpl_chunk.request_id = args[2]
                 yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         prompt = "Hi, I love my cat"
         params = CompletionRequest(
@@ -1185,7 +1167,8 @@ class TestCompletions:
     async def test_vllm_completion_facebook_opt_model_with_max_token(
         self, vllm_opt_model
     ):
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         request_id = "cmpl-d771287a234c44498e345f0a429d6691"
 
         async def mock_generate(*args, **kwargs) -> AsyncIterator[RequestOutput]:
@@ -1193,7 +1176,7 @@ class TestCompletions:
                 cmpl_chunk.request_id = args[2]
                 yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         prompt = "Hi, I love my cat"
         params = CompletionRequest(
@@ -1224,7 +1207,8 @@ class TestCompletions:
     async def test_vllm_completion_facebook_opt_model_with_max_token_stream(
         self, vllm_opt_model
     ):
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         model_name = "opt-125m"
 
         async def mock_generate(*args, **kwargs) -> AsyncIterator[RequestOutput]:
@@ -1232,7 +1216,7 @@ class TestCompletions:
                 cmpl_chunk.request_id = args[2]
                 yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         prompt = "Hi, I love my cat"
         params = CompletionRequest(
@@ -1257,7 +1241,8 @@ class TestCompletions:
     async def test_vllm_completion_facebook_opt_model_with_logprobs(
         self, vllm_opt_model
     ):
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         request_id = "cmpl-d771287a234c44498e345f0a429d6691"
 
         async def mock_generate(*args, **kwargs) -> AsyncIterator[RequestOutput]:
@@ -1265,7 +1250,7 @@ class TestCompletions:
                 cmpl_chunk.request_id = args[2]
                 yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         prompt = "Hi, I love my cat"
         params = CompletionRequest(
@@ -1370,7 +1355,8 @@ class TestCompletions:
     async def test_vllm_completion_facebook_opt_model_with_logprobs_stream(
         self, vllm_opt_model
     ):
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         model_name = "opt-125m"
 
         async def mock_generate(*args, **kwargs) -> AsyncIterator[RequestOutput]:
@@ -1378,7 +1364,7 @@ class TestCompletions:
                 cmpl_chunk.request_id = args[2]
                 yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         prompt = "Hi, I love my cat"
         params = CompletionRequest(
@@ -1476,7 +1462,8 @@ class TestCompletions:
         )
 
     async def test_vllm_completion_facebook_opt_model_with_echo(self, vllm_opt_model):
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         request_id = "cmpl-d771287a234c44498e345f0a429d6691"
 
         async def mock_generate(*args, **kwargs) -> AsyncIterator[RequestOutput]:
@@ -1484,7 +1471,7 @@ class TestCompletions:
                 cmpl_chunk.request_id = args[2]
                 yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         prompt = "Hi, I love my cat"
         params = CompletionRequest(
@@ -1516,7 +1503,8 @@ class TestCompletions:
     async def test_vllm_completion_facebook_opt_model_with_echo_stream(
         self, vllm_opt_model
     ):
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         model_name = "opt-125m"
 
         async def mock_generate(*args, **kwargs) -> AsyncIterator[RequestOutput]:
@@ -1524,7 +1512,7 @@ class TestCompletions:
                 cmpl_chunk.request_id = args[2]
                 yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         prompt = "Hi, I love my cat"
         params = CompletionRequest(
@@ -1553,7 +1541,8 @@ class TestCompletions:
     async def test_vllm_completion_facebook_opt_model_with_echo_and_logprobs(
         self, vllm_opt_model
     ):
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         request_id = "cmpl-d771287a234c44498e345f0a429d6691"
 
         async def mock_generate(*args, **kwargs) -> AsyncIterator[RequestOutput]:
@@ -1561,7 +1550,7 @@ class TestCompletions:
                 cmpl_chunk.request_id = args[2]
                 yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         prompt = "Hi, I love my cat"
         params = CompletionRequest(
@@ -1715,7 +1704,8 @@ class TestCompletions:
     async def test_vllm_completion_facebook_opt_model_with_echo_and_logprobs_stream(
         self, vllm_opt_model
     ):
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         model_name = "opt-125m"
 
         async def mock_generate(*args, **kwargs) -> AsyncIterator[RequestOutput]:
@@ -1723,7 +1713,7 @@ class TestCompletions:
                 cmpl_chunk.request_id = args[2]
                 yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         prompt = "Hi, I love my cat"
         params = CompletionRequest(
@@ -1867,7 +1857,8 @@ class TestCompletions:
     async def test_vllm_completion_facebook_opt_model_with_two_prompts(
         self, vllm_opt_model
     ):
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         request_id = "cmpl-d771287a234c44498e345f0a429d6691"
         prompts = ["Hi, I love my cat", "The sky is blue"]
 
@@ -1881,7 +1872,7 @@ class TestCompletions:
                     cmpl_chunk.request_id = args[2]
                     yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         params = CompletionRequest(
             model="opt-125m",
@@ -1917,7 +1908,8 @@ class TestCompletions:
     async def test_vllm_completion_facebook_opt_model_with_two_prompts_stream(
         self, vllm_opt_model
     ):
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         model_name = "opt-125m"
         prompts = ["Hi, I love my cat", "The sky is blue"]
 
@@ -1931,7 +1923,7 @@ class TestCompletions:
                     cmpl_chunk.request_id = args[2]
                     yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         params = CompletionRequest(
             model=model_name,
@@ -1962,7 +1954,8 @@ class TestCompletions:
     async def test_vllm_completion_facebook_opt_model_with_two_prompts_echo(
         self, vllm_opt_model
     ):
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         request_id = "cmpl-d771287a234c44498e345f0a429d6691"
         prompts = ["Hi, I love my cat", "The sky is blue"]
 
@@ -1976,7 +1969,7 @@ class TestCompletions:
                     cmpl_chunk.request_id = args[2]
                     yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         params = CompletionRequest(
             model="opt-125m",
@@ -2014,7 +2007,8 @@ class TestCompletions:
     async def test_vllm_completion_facebook_opt_model_with_two_prompts_echo_stream(
         self, vllm_opt_model
     ):
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         model_name = "opt-125m"
         prompts = ["Hi, I love my cat", "The sky is blue"]
 
@@ -2028,7 +2022,7 @@ class TestCompletions:
                     cmpl_chunk.request_id = args[2]
                     yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         params = CompletionRequest(
             model=model_name,
@@ -2060,7 +2054,8 @@ class TestCompletions:
     async def test_vllm_completion_facebook_opt_model_with_two_prompts_logprobs(
         self, vllm_opt_model
     ):
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         request_id = "cmpl-d771287a234c44498e345f0a429d6691"
         model_name = "opt-125m"
         prompts = ["Hi, I love my cat", "The sky is blue"]
@@ -2075,7 +2070,7 @@ class TestCompletions:
                     cmpl_chunk.request_id = args[2]
                     yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         params = CompletionRequest(
             model=model_name,
@@ -2251,7 +2246,8 @@ class TestCompletions:
     async def test_vllm_completion_facebook_opt_model_with_two_prompts_logprobs_stream(
         self, vllm_opt_model
     ):
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         model_name = "opt-125m"
         prompts = ["Hi, I love my cat", "The sky is blue"]
 
@@ -2265,7 +2261,7 @@ class TestCompletions:
                     cmpl_chunk.request_id = args[2]
                     yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         params = CompletionRequest(
             model=model_name,
@@ -2443,14 +2439,15 @@ class TestCompletions:
         ]
 
     async def test_vllm_completion_facebook_opt_model_with_suffix(self, vllm_opt_model):
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
 
         async def mock_generate(*args, **kwargs) -> AsyncIterator[RequestOutput]:
             for cmpl_chunk in opt_cmpl_chunks:
                 cmpl_chunk.request_id = args[2]
                 yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         prompt = "Hi, I love my cat"
         params = CompletionRequest(
@@ -2469,7 +2466,8 @@ class TestCompletions:
         """
         When best_of != n, the result should not be streamed even if stream=True is set
         """
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         request_id = "cmpl-d771287a234c44498e345f0a429d6691"
 
         async def mock_generate(*args, **kwargs) -> AsyncIterator[RequestOutput]:
@@ -2477,7 +2475,7 @@ class TestCompletions:
                 cmpl_chunk.request_id = args[2]
                 yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         prompt = "Hi, I love my cat"
         params = CompletionRequest(
@@ -2521,7 +2519,8 @@ class TestCompletions:
         """
         When best_of == n, the result can be streamed when stream=True is set
         """
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         model_name = "ot-125m"
 
         async def mock_generate(*args, **kwargs) -> AsyncIterator[RequestOutput]:
@@ -2529,7 +2528,7 @@ class TestCompletions:
                 cmpl_chunk.request_id = args[2]
                 yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         prompt = "Hi, I love my cat"
         params = CompletionRequest(
@@ -2567,7 +2566,8 @@ class TestCompletions:
     async def test_vllm_completion_facebook_opt_model_with_best_of_and_n_and_echo(
         self, vllm_opt_model
     ):
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         request_id = "cmpl-d771287a234c44498e345f0a429d6691"
 
         async def mock_generate(*args, **kwargs) -> AsyncIterator[RequestOutput]:
@@ -2575,7 +2575,7 @@ class TestCompletions:
                 cmpl_chunk.request_id = args[2]
                 yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         prompt = "Hi, I love my cat"
         params = CompletionRequest(
@@ -2620,7 +2620,8 @@ class TestCompletions:
         """
         When best_of == n, the result can be streamed when stream=True is set
         """
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         model_name = "ot-125m"
 
         async def mock_generate(*args, **kwargs) -> AsyncIterator[RequestOutput]:
@@ -2628,7 +2629,7 @@ class TestCompletions:
                 cmpl_chunk.request_id = args[2]
                 yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         prompt = "Hi, I love my cat"
         params = CompletionRequest(
@@ -2667,14 +2668,15 @@ class TestCompletions:
     async def test_vllm_completion_facebook_opt_model_with_max_tokens_exceed_model_len(
         self, vllm_opt_model
     ):
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
 
         async def mock_generate(*args, **kwargs) -> AsyncIterator[RequestOutput]:
             for cmpl_chunk in opt_cmpl_chunks:
                 cmpl_chunk.request_id = args[2]
                 yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         prompt = "Hi, I love my cat"
         params = CompletionRequest(
@@ -2689,7 +2691,8 @@ class TestCompletions:
     async def test_vllm_completion_facebook_opt_model_with_token_ids(
         self, vllm_opt_model
     ):
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         request_id = "cmpl-d771287a234c44498e345f0a429d6691"
 
         async def mock_generate(*args, **kwargs) -> AsyncIterator[RequestOutput]:
@@ -2697,7 +2700,7 @@ class TestCompletions:
                 cmpl_chunk.request_id = args[2]
                 yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         token_ids = [2, 30086, 6, 38, 657, 127, 4758]
         params = CompletionRequest(
@@ -2729,7 +2732,8 @@ class TestCompletions:
     async def test_vllm_completion_facebook_opt_model_with_token_ids_and_echo(
         self, vllm_opt_model
     ):
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         request_id = "cmpl-d771287a234c44498e345f0a429d6691"
 
         async def mock_generate(*args, **kwargs) -> AsyncIterator[RequestOutput]:
@@ -2737,7 +2741,7 @@ class TestCompletions:
                 cmpl_chunk.request_id = args[2]
                 yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         token_ids = [2, 30086, 6, 38, 657, 127, 4758]
         params = CompletionRequest(
@@ -2774,7 +2778,8 @@ class TestCompletions:
     async def test_vllm_completion_facebook_opt_model_with_batch_token_ids(
         self, vllm_opt_model
     ):
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         request_id = "cmpl-d771287a234c44498e345f0a429d6691"
         token_ids = [[2, 30086, 6, 38, 657, 127, 4758], [2, 133, 6360, 16, 2440]]
 
@@ -2788,7 +2793,7 @@ class TestCompletions:
                     cmpl_chunk.request_id = args[2]
                     yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         params = CompletionRequest(
             model="opt-125m",
@@ -2824,7 +2829,8 @@ class TestCompletions:
     async def test_vllm_completion_facebook_opt_model_with_batch_token_ids_with_echo(
         self, vllm_opt_model
     ):
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         request_id = "cmpl-d771287a234c44498e345f0a429d6691"
         token_ids = [[2, 30086, 6, 38, 657, 127, 4758], [2, 133, 6360, 16, 2440]]
 
@@ -2838,7 +2844,7 @@ class TestCompletions:
                     cmpl_chunk.request_id = args[2]
                     yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         params = CompletionRequest(
             model="opt-125m",
@@ -2876,7 +2882,8 @@ class TestCompletions:
     async def test_vllm_completion_facebook_opt_model_with_logit_bias(
         self, vllm_opt_model
     ):
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         request_id = "cmpl-d771287a234c44498e345f0a429d6691"
 
         async def mock_generate(*args, **kwargs) -> AsyncIterator[RequestOutput]:
@@ -2884,7 +2891,7 @@ class TestCompletions:
                 cmpl_chunk.request_id = args[2]
                 yield cmpl_chunk
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
 
         prompt = "Hi, I love my cat"
         params = CompletionRequest(
@@ -2916,13 +2923,14 @@ class TestCompletions:
 
 class TestOpenAIServingCompletion:
     def test_validate_input_with_max_tokens_exceeding_model_limit(self, vllm_opt_model):
-        opt_model, mock_vllm_engine = vllm_opt_model
+        opt_model = vllm_opt_model
+        engine_client = opt_model.engine_client
         prompt = "Hi, I love my cat"
 
         async def mock_generate(*args, **kwargs) -> AsyncIterator[RequestOutput]:
             pass
 
-        mock_vllm_engine.generate = mock_generate
+        engine_client.generate = mock_generate
         request = CompletionRequest(
             model="opt-125m",
             prompt=prompt,
