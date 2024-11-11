@@ -91,7 +91,7 @@ def vllm_opt_model():
     engine_client.get_model_config = mock_get_model_config
 
     def mock_load(self) -> bool:
-        asyncio.run(self.setup_engine())
+        asyncio.run(self.setup_engine()) #
         self.ready = True
         return self.ready
 
