@@ -40,14 +40,14 @@ from transformers import (
     PretrainedConfig,
     TensorType,
 )
-from kserve.utils import generate_uuid, LLMStats
-from kserve.protocol.rest.openai.types import (
-    EmbeddingRequest,
-    Embedding,
-    EmbeddingResponseData,
-    UsageInfo, 
-    ErrorResponse
-)
+# from kserve.utils import generate_uuid, LLMStats
+# from kserve.protocol.rest.openai.types import (
+#     EmbeddingRequest,
+#     Embedding,
+#     EmbeddingResponseData,
+#     UsageInfo, 
+#     ErrorResponse
+# )
 
 from kserve.protocol.rest.openai import OpenAIModel
 
@@ -59,6 +59,11 @@ from .task import (
     infer_task_from_model_architecture,
 )
 from .utils import _get_and_verify_max_len, _mean_pooling
+
+from kserve.utils.utils import generate_uuid
+from kserve.metrics import LLMStats
+from kserve.protocol.rest.openai.types.openapi import Embedding
+from vllm.entrypoints.openai.protocol import EmbeddingRequest, EmbeddingResponseData, UsageInfo, ErrorResponse
 
 
 class HuggingfaceEncoderModel(Model, OpenAIModel):  # pylint:disable=c-extension-no-member

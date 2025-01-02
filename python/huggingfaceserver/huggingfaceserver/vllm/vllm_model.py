@@ -38,10 +38,12 @@ from vllm.entrypoints.openai.serving_completion import OpenAIServingCompletion
 from vllm.entrypoints.openai.serving_chat import OpenAIServingChat
 from vllm.entrypoints.openai.serving_embedding import OpenAIServingEmbedding
 from vllm.entrypoints.openai.serving_tokenization import OpenAIServingTokenization
+from vllm.entrypoints.openai.tool_parsers import ToolParserManager
 from vllm.entrypoints.openai.protocol import ErrorResponse
 from vllm.entrypoints.openai.serving_engine import BaseModelPath
-from vllm.entrypoints.openai.api_server import build_async_engine_client
+from vllm.entrypoints.openai.api_server import build_async_engine_client, build_async_engine_client_from_engine_args
 from vllm.entrypoints.openai.cli_args import validate_parsed_serve_args
+from vllm.entrypoints.chat_utils import load_chat_template
 from .utils import build_vllm_engine_args
 
 
@@ -65,65 +67,105 @@ class VLLMModel(Model, OpenAIModel):  # pylint:disable=c-extension-no-member
         self.request_logger = request_logger
 
     async def setup_engine(self):
-        if self.args.served_model_name is not None:
-            served_model_names = self.args.served_model_name
-        else:
-            served_model_names = [self.args.model]
-
-        base_model_paths = [
-            BaseModelPath(name=name, model_path=self.args.model)
-            for name in served_model_names
-        ]
         async with build_async_engine_client(self.args) as engine_client:
             self.engine_client = engine_client
+            if self.args.served_model_name is not None:
+                served_model_names = self.args.served_model_name
+            else:
+                served_model_names = [self.args.model]
+
+            self.base_model_paths = [
+                BaseModelPath(name=name, model_path=self.args.model)
+                for name in served_model_names
+            ]
+            
             self.log_stats = not self.vllm_engine_args.disable_log_stats
             self.model_config = await engine_client.get_model_config()
+
+
+    async def load_openai(self):
+        if self.args.tool_parser_plugin and len(self.args.tool_parser_plugin) > 3:
+            ToolParserManager.import_tool_parser(self.args.tool_parser_plugin)
+
+        valide_tool_parses = ToolParserManager.tool_parsers.keys()
+        if self.args.enable_auto_tool_choice \
+            and self.args.tool_call_parser not in valide_tool_parses:
+            raise KeyError(f"invalid tool call parser: {self.args.tool_call_parser} "
+                        f"(chose from {{ {','.join(valide_tool_parses)} }})")
+
+        engine_args = AsyncEngineArgs.from_cli_args(self.args)
+        async with build_async_engine_client_from_engine_args(engine_args, disable_frontend_multiprocessing=True) as engine_client:
+            self.engine_client = engine_client
+            if self.args.served_model_name is not None:
+                served_model_names = self.args.served_model_name
+            else:
+                served_model_names = [self.args.model]
+
+            self.base_model_paths = [
+                BaseModelPath(name=name, model_path=self.args.model)
+                for name in served_model_names
+            ]
+            
+            self.log_stats = not self.args.disable_log_stats
+            self.model_config = await engine_client.get_model_config()
+
+            resolved_chat_template = load_chat_template(self.args.chat_template)
 
             self.openai_serving_chat = OpenAIServingChat(
                 self.engine_client,
                 self.model_config,
-                base_model_paths,
+                self.base_model_paths,
                 self.args.response_role,
                 lora_modules=self.args.lora_modules,
                 prompt_adapters=self.args.prompt_adapters,
                 request_logger=self.request_logger,
-                chat_template=self.args.chat_template,
+                chat_template=resolved_chat_template,
                 return_tokens_as_token_ids=self.args.return_tokens_as_token_ids,
                 enable_auto_tools=self.args.enable_auto_tool_choice,
                 tool_parser=self.args.tool_call_parser,
-            )
-
+            ) if self.model_config.runner_type == "generate" else None
             self.openai_serving_completion = OpenAIServingCompletion(
                 self.engine_client,
                 self.model_config,
-                base_model_paths,
+                self.base_model_paths,
                 lora_modules=self.args.lora_modules,
                 prompt_adapters=self.args.prompt_adapters,
                 request_logger=self.request_logger,
                 return_tokens_as_token_ids=self.args.return_tokens_as_token_ids,
-            )
+            ) if self.model_config.runner_type == "generate" else None
             # TODO: add embedding and tokenization
             self.openai_serving_embedding = OpenAIServingEmbedding(
                 self.engine_client,
                 self.model_config,
-                base_model_paths,
+                self.base_model_paths,
                 request_logger=self.request_logger,
-            )
+            ) if self.model_config.task == "embed" else None
             self.openai_serving_tokenization = OpenAIServingTokenization(
                 self.engine_client,
                 self.model_config,
-                base_model_paths,
+                self.base_model_paths,
                 lora_modules=self.args.lora_modules,
                 request_logger=self.request_logger,
                 chat_template=self.args.chat_template,
             )
+        
+        self.ready = True
+        return self.ready
+
 
     def load(self) -> bool:
         if torch.cuda.is_available():
             self.vllm_engine_args.tensor_parallel_size = torch.cuda.device_count()
-        asyncio.run(self.setup_engine())
-        self.ready = True
-        return self.ready
+        # asyncio.run(self.setup_engine())
+        # loop = asyncio.get_event_loop() 
+        # loop.run_until_complete(self.load_openai())
+        # asyncio.ensure_future(self.load_openai(), loop=loop)
+        # loop.create_task(self.setup_engine())
+        # loop = asyncio.new_event_loop()
+        # asyncio.ensure_future(self.load_openai(), loop=loop)
+        # uvloop.run(self.setup_engine())
+        
+        return False
 
     async def healthy(self) -> bool:
         try:
@@ -146,6 +188,7 @@ class VLLMModel(Model, OpenAIModel):  # pylint:disable=c-extension-no-member
         request: ChatCompletionRequest,
         raw_request: Optional[Request] = None,
     ) -> Union[AsyncGenerator[str, None], ChatCompletion, ErrorResponse]:
+        print("HERE")
         return await self.openai_serving_chat.create_chat_completion(
             request, raw_request
         )
