@@ -21,12 +21,12 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import TypeAdapter, ValidationError
 from starlette.responses import StreamingResponse
 
-from kserve.protocol.rest.openai.types.openapi import (
+from kserve.protocol.rest.openai.types import (
     ChatCompletionRequest,
     CompletionRequest,
     EmbeddingRequest,
-    ListModelsResponse,  # TODO: Does vLLM support it?
-    Model,  # TODO: vLLM does not support
+    Model, 
+    ModelList,
 )
 
 from ....errors import ModelNotReady
@@ -169,7 +169,7 @@ class OpenAIEndpoints:
         
     async def models(
         self,
-    ) -> ListModelsResponse:
+    ) -> ModelList:
         """Create chat completion handler.
 
         Args:
@@ -179,7 +179,7 @@ class OpenAIEndpoints:
             ListModelsResponse: Model response object.
         """
         models = await self.dataplane.models()
-        return ListModelsResponse(
+        return ModelList(
             object="list",
             data=[
                 Model(

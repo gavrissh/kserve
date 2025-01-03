@@ -62,7 +62,7 @@ from .utils import _get_and_verify_max_len, _mean_pooling
 
 from kserve.utils.utils import generate_uuid
 from kserve.metrics import LLMStats
-from kserve.protocol.rest.openai.types.openapi import Embedding
+from kserve.protocol.rest.openai.types import Embedding
 from vllm.entrypoints.openai.protocol import EmbeddingRequest, EmbeddingResponseData, UsageInfo, ErrorResponse
 
 

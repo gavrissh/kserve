@@ -16,7 +16,7 @@ from typing import Union
 from http import HTTPStatus
 from fastapi.responses import JSONResponse
 from kserve.logging import logger
-from .types.openapi import ErrorResponse
+from .types import ErrorResponse
 
 
 class OpenAIError(Exception):

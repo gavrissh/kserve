@@ -13,7 +13,6 @@
 # limitations under the License.
 
 from typing import Optional, Union, AsyncGenerator
-import asyncio
 import torch
 from argparse import Namespace
 from fastapi import Request  # TODO: Double check if it's installed here
@@ -37,11 +36,10 @@ from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.openai.serving_completion import OpenAIServingCompletion
 from vllm.entrypoints.openai.serving_chat import OpenAIServingChat
 from vllm.entrypoints.openai.serving_embedding import OpenAIServingEmbedding
-from vllm.entrypoints.openai.serving_tokenization import OpenAIServingTokenization
 from vllm.entrypoints.openai.tool_parsers import ToolParserManager
 from vllm.entrypoints.openai.protocol import ErrorResponse
 from vllm.entrypoints.openai.serving_engine import BaseModelPath
-from vllm.entrypoints.openai.api_server import build_async_engine_client, build_async_engine_client_from_engine_args
+from vllm.entrypoints.openai.api_server import build_async_engine_client_from_engine_args
 from vllm.entrypoints.openai.cli_args import validate_parsed_serve_args
 from vllm.entrypoints.chat_utils import load_chat_template
 from .utils import build_vllm_engine_args
@@ -55,35 +53,20 @@ class VLLMModel(Model, OpenAIModel):  # pylint:disable=c-extension-no-member
 
     def __init__(
         self,
+        model_name: str,
         args: Namespace,
         predictor_config: Optional[PredictorConfig] = None,
         request_logger: Optional[RequestLogger] = None,
     ):
-        super().__init__(args.model, predictor_config)  # TODO: where is model_name?
+        super().__init__(model_name, predictor_config)
         self.args = args
         validate_parsed_serve_args(args)
         engine_args = build_vllm_engine_args(args)  # Only for easy to write tests
         self.vllm_engine_args = engine_args
         self.request_logger = request_logger
+        self.model_name = model_name
 
-    async def setup_engine(self):
-        async with build_async_engine_client(self.args) as engine_client:
-            self.engine_client = engine_client
-            if self.args.served_model_name is not None:
-                served_model_names = self.args.served_model_name
-            else:
-                served_model_names = [self.args.model]
-
-            self.base_model_paths = [
-                BaseModelPath(name=name, model_path=self.args.model)
-                for name in served_model_names
-            ]
-            
-            self.log_stats = not self.vllm_engine_args.disable_log_stats
-            self.model_config = await engine_client.get_model_config()
-
-
-    async def load_openai(self):
+    async def start_engine(self):
         if self.args.tool_parser_plugin and len(self.args.tool_parser_plugin) > 3:
             ToolParserManager.import_tool_parser(self.args.tool_parser_plugin)
 
@@ -99,7 +82,7 @@ class VLLMModel(Model, OpenAIModel):  # pylint:disable=c-extension-no-member
             if self.args.served_model_name is not None:
                 served_model_names = self.args.served_model_name
             else:
-                served_model_names = [self.args.model]
+                served_model_names = [self.model_name, self.args.model]
 
             self.base_model_paths = [
                 BaseModelPath(name=name, model_path=self.args.model)
@@ -120,6 +103,7 @@ class VLLMModel(Model, OpenAIModel):  # pylint:disable=c-extension-no-member
                 prompt_adapters=self.args.prompt_adapters,
                 request_logger=self.request_logger,
                 chat_template=resolved_chat_template,
+                chat_template_content_format=self.args.chat_template_content_format,
                 return_tokens_as_token_ids=self.args.return_tokens_as_token_ids,
                 enable_auto_tools=self.args.enable_auto_tool_choice,
                 tool_parser=self.args.tool_call_parser,
@@ -133,21 +117,14 @@ class VLLMModel(Model, OpenAIModel):  # pylint:disable=c-extension-no-member
                 request_logger=self.request_logger,
                 return_tokens_as_token_ids=self.args.return_tokens_as_token_ids,
             ) if self.model_config.runner_type == "generate" else None
-            # TODO: add embedding and tokenization
             self.openai_serving_embedding = OpenAIServingEmbedding(
                 self.engine_client,
                 self.model_config,
                 self.base_model_paths,
                 request_logger=self.request_logger,
+                chat_template=resolved_chat_template,
+                chat_template_content_format=self.args.chat_template_content_format,
             ) if self.model_config.task == "embed" else None
-            self.openai_serving_tokenization = OpenAIServingTokenization(
-                self.engine_client,
-                self.model_config,
-                self.base_model_paths,
-                lora_modules=self.args.lora_modules,
-                request_logger=self.request_logger,
-                chat_template=self.args.chat_template,
-            )
         
         self.ready = True
         return self.ready
@@ -156,16 +133,17 @@ class VLLMModel(Model, OpenAIModel):  # pylint:disable=c-extension-no-member
     def load(self) -> bool:
         if torch.cuda.is_available():
             self.vllm_engine_args.tensor_parallel_size = torch.cuda.device_count()
-        # asyncio.run(self.setup_engine())
-        # loop = asyncio.get_event_loop() 
-        # loop.run_until_complete(self.load_openai())
-        # asyncio.ensure_future(self.load_openai(), loop=loop)
-        # loop.create_task(self.setup_engine())
-        # loop = asyncio.new_event_loop()
-        # asyncio.ensure_future(self.load_openai(), loop=loop)
-        # uvloop.run(self.setup_engine())
         
+        self.engine = True
         return False
+
+    def start(self):
+        pass
+
+    def stop_engine(self):
+        if hasattr(self.engine_client, "shutdown"):
+            self.engine_client.shutdown()
+        self.ready = False
 
     async def healthy(self) -> bool:
         try:
@@ -188,7 +166,6 @@ class VLLMModel(Model, OpenAIModel):  # pylint:disable=c-extension-no-member
         request: ChatCompletionRequest,
         raw_request: Optional[Request] = None,
     ) -> Union[AsyncGenerator[str, None], ChatCompletion, ErrorResponse]:
-        print("HERE")
         return await self.openai_serving_chat.create_chat_completion(
             request, raw_request
         )

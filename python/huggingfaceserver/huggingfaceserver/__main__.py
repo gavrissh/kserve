@@ -149,7 +149,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--max_log_len",
-    "--max-log-len",
+    # "--max-log-len",
     type=int,
     default=None,
     help="Max number of prompt characters or prompt "
@@ -214,8 +214,8 @@ def load_model():
         args.revision = args.model_revision
 
         model = VLLMModel(
-            args, request_logger=request_logger
-        )  # TODO: need more arguments ?
+            args.model_name, args, request_logger=request_logger
+        ) 
 
     else:
         kwargs = vars(args)

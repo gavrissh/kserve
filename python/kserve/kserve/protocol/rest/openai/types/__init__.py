@@ -12,55 +12,37 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from kserve.protocol.rest.openai.types.openapi import (
-    ChatMessage,
-    ChatCompletionLogProb,
-    CompletionLogProbs,
-    ChatCompletionRequest,
-    ChatCompletionMessageParam,
-    ErrorResponse,
-    UsageInfo,
-    EmbeddingRequest,
-    ChatCompletionLogProbsContent,
-)
-
-from kserve.protocol.rest.openai.types.openapi import (
-    DeltaMessage as ChoiceDelta,
-)
-from kserve.protocol.rest.openai.types.openapi import (
-    CompletionResponseChoice as CompletionChoice,
-)
-from kserve.protocol.rest.openai.types.openapi import (
-    ChatCompletionResponseChoice as ChatCompletionChoice,
-)
-from kserve.protocol.rest.openai.types.openapi import (
-    ChatCompletionResponseStreamChoice as ChunkChoice,
-)
-from kserve.protocol.rest.openai.types.openapi import (
+from vllm.entrypoints.openai.protocol import (
+    ChatCompletionRequest, 
     ChatCompletionResponse as ChatCompletion,
-)
-from kserve.protocol.rest.openai.types.openapi import (
+    ChatCompletionResponseChoice as ChatCompletionChoice,
+    ChatCompletionLogProb,
+    ChatCompletionLogProbs,
     ChatCompletionStreamResponse as ChatCompletionChunk,
-)
-from kserve.protocol.rest.openai.types.openapi import CompletionRequest
-from kserve.protocol.rest.openai.types.openapi import (
+    ChatCompletionResponseStreamChoice as ChunkChoice,
+    ChatMessage,
+    DeltaMessage as ChoiceDelta,
     CompletionResponse as Completion,
+    CompletionResponseChoice as CompletionChoice,
+    ErrorResponse,
+    CompletionLogProbs,
+    UsageInfo,
+    ChatCompletionLogProbsContent,
+    ModelCard as Model,
+    ModelList,
 )
-from kserve.protocol.rest.openai.types.openapi import (
-    EmbeddingResponse as Embedding,
-)
-from kserve.protocol.rest.openai.types.openapi import (
-    ChatCompletionLogProbs as ChatCompletionChoiceLogProbs,
-)
+from vllm.entrypoints.openai.protocol import CompletionRequest, CompletionResponse as Completion
+from vllm.entrypoints.openai.protocol import EmbeddingRequest, EmbeddingResponse as Embedding
+from vllm.entrypoints.chat_utils import ChatCompletionMessageParam
 
 
 __all__ = [
     "ChatCompletion",
     "ChatCompletionChoice",
-    "ChatCompletionChoiceLogProbs",
     "ChatCompletionChunk",
     "ChatMessage",
-    "ChatCompletionLogProb",
+    "ChatCompletionLogProb"
+    "ChatCompletionLogProbs",
     "ChoiceDelta",
     "ChunkChoice",
     "Completion",
@@ -72,4 +54,8 @@ __all__ = [
     "UsageInfo",
     "ChatCompletionMessageParam",
     "ChatCompletionLogProbsContent",
+    "Embedding",
+    "EmbeddingRequest",
+    "Model",
+    "ModelList",
 ]

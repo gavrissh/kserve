@@ -23,7 +23,7 @@ from kserve.protocol.rest.openai.types import (
     ChatCompletion,
     ChatCompletionChoice,
     ChatCompletionLogProb,
-    ChatCompletionChoiceLogProbs,
+    ChatCompletionLogProbs,
     ChatCompletionChunk,
     ChatCompletionMessageParam,
     ChatMessage,
@@ -87,7 +87,7 @@ class OpenAIChatAdapterModel(OpenAIModel):
     @classmethod
     def to_choice_logprobs(
         cls, logprobs: CompletionLogProbs
-    ) -> ChatCompletionChoiceLogProbs:
+    ) -> ChatCompletionLogProbs:
         chat_completion_logprobs = []
         for i in range(len(logprobs.tokens)):
             token = logprobs.tokens[i]
@@ -110,7 +110,7 @@ class OpenAIChatAdapterModel(OpenAIModel):
                 )
             )
 
-        return ChatCompletionChoiceLogProbs(content=chat_completion_logprobs)
+        return ChatCompletionLogProbs(content=chat_completion_logprobs)
 
     @classmethod
     def to_chat_completion_choice(
@@ -140,7 +140,7 @@ class OpenAIChatAdapterModel(OpenAIModel):
             else None
         )
         choice_logprobs = (
-            ChatCompletionChoiceLogProbs(content=choice_logprobs.content)
+            ChatCompletionLogProbs(content=choice_logprobs.content)
             if choice_logprobs is not None
             else None
         )

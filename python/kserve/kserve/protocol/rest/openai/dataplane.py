@@ -19,15 +19,11 @@ from starlette.datastructures import Headers
 
 from kserve.protocol.rest.openai.types import ErrorResponse
 
-from kserve.protocol.rest.openai.types.openapi import ChatCompletionRequest
-from kserve.protocol.rest.openai.types.openapi import (
-    ChatCompletionResponse as ChatCompletion,
-)
+from kserve.protocol.rest.openai.types import ChatCompletionRequest, ChatCompletion
 
-from kserve.protocol.rest.openai.types.openapi import CompletionRequest
-from kserve.protocol.rest.openai.types.openapi import (
-    CompletionResponse as Completion,
-)
+from kserve.protocol.rest.openai.types import CompletionRequest, Completion
+
+from kserve.protocol.rest.openai.types import EmbeddingRequest, Embedding
 
 from ...dataplane import DataPlane
 from .openai_model import OpenAIModel
@@ -93,16 +89,16 @@ class OpenAIDataPlane(DataPlane):
     async def create_embedding(
         self,
         model_name: str,
-        request: CompletionRequest,
+        request: EmbeddingRequest,
         raw_request: Request,
         headers: Headers,
         response: Response,
-    ) -> Union[AsyncGenerator[str, None], Completion, ErrorResponse]:
+    ) -> Union[AsyncGenerator[str, None], Embedding, ErrorResponse]:
         """Generate the text with the provided text prompt.
 
         Args:
             model_name (str): Model name.
-            request (CompletionRequest): Params to create a embedding.
+            request (EmbeddingRequest): Params to create a embedding.
             raw_request (Request): fastapi request object.
             headers: (Headers): Request headers.
             response: (Response): FastAPI response object

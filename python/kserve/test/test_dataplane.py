@@ -27,7 +27,7 @@ import tomlkit
 from cloudevents.conversion import to_binary, to_structured
 from cloudevents.http import CloudEvent
 from ray import serve
-from kserve.protocol.rest.openai.types.openapi import (
+from kserve.protocol.rest.openai.types import (
     ChatCompletionResponse as ChatCompletion,
     ChatCompletionStreamResponse as ChatCompletionChunk,
     CompletionResponse as Completion,

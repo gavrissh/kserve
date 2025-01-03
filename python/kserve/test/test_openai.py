@@ -35,7 +35,7 @@ from kserve.protocol.rest.openai import (
     OpenAIProxyModel,
 )
 from kserve.protocol.rest.openai.errors import OpenAIError
-from kserve.protocol.rest.openai.types.openapi import ChatCompletionTool
+from kserve.protocol.rest.openai.types import ChatCompletionTool
 from kserve.protocol.rest.openai.types import (
     CompletionRequest,
     ChatCompletionRequest,
