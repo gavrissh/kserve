@@ -59,147 +59,14 @@ from .task import (
 from .utils import _get_and_verify_max_len, _mean_pooling
 
 
-class HuggingfaceEncoderModel(
-    Model, OpenAIEmbeddingModel
-):  # pylint:disable=c-extension-no-member
-    task: MLTask
-    model_config: PretrainedConfig
-    model_id_or_path: Union[pathlib.Path, str]
-    do_lower_case: bool
-    add_special_tokens: bool
-    max_length: Optional[int]
-    tensor_input_names: Optional[str]
-    return_token_type_ids: Optional[bool]
-    model_revision: Optional[str]
-    tokenizer_revision: Optional[str]
-    trust_remote_code: bool
-    ready: bool = False
-    _tokenizer: PreTrainedTokenizerBase
-    _model: Optional[PreTrainedModel] = None
-    _device: torch.device
-
+class HuggingfaceEncoderV2Model(Model):  # pylint:disable=c-extension-no-member
     def __init__(
         self,
         model_name: str,
-        model_id_or_path: Union[pathlib.Path, str],
-        model_config: Optional[PretrainedConfig] = None,
-        task: Optional[MLTask] = None,
-        do_lower_case: bool = False,
-        add_special_tokens: bool = True,
-        max_length: Optional[int] = None,
-        dtype: torch.dtype = torch.float32,
-        tensor_input_names: Optional[str] = None,
-        return_token_type_ids: Optional[bool] = None,
-        model_revision: Optional[str] = None,
-        tokenizer_revision: Optional[str] = None,
-        trust_remote_code: bool = False,
-        return_probabilities: bool = False,
         predictor_config: Optional[PredictorConfig] = None,
-        request_logger: Optional[RequestLogger] = None,
     ):
         super().__init__(model_name, predictor_config)
-        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model_id_or_path = model_id_or_path
-        self.do_lower_case = do_lower_case
-        self.add_special_tokens = add_special_tokens
-        self.max_length = max_length
-        self.dtype = dtype
-        self.tensor_input_names = tensor_input_names
-        self.return_token_type_ids = return_token_type_ids
-        self.model_revision = model_revision
-        self.tokenizer_revision = tokenizer_revision
-        self.trust_remote_code = trust_remote_code
-        self.return_probabilities = return_probabilities
-        self.request_logger = request_logger
 
-        if model_config:
-            self.model_config = model_config
-        else:
-            self.model_config = AutoConfig.from_pretrained(
-                self.model_id_or_path, trust_remote_code=self.trust_remote_code
-            )
-
-        if task:
-            self.task = task
-            try:
-                inferred_task = infer_task_from_model_architecture(self.model_config)
-            except ValueError:
-                inferred_task = None
-            if inferred_task is not None and inferred_task != task:
-                logger.warning(
-                    f"Inferred task is '{inferred_task.name}' but"
-                    f" task is explicitly set to '{self.task.name}'"
-                )
-        else:
-            self.task = infer_task_from_model_architecture(self.model_config)
-
-        if is_generative_task(self.task):
-            raise RuntimeError(
-                f"Encoder model does not support generative task: {self.task.name}"
-            )
-
-    def load(self) -> bool:
-        model_id_or_path = self.model_id_or_path
-
-        self.max_length = _get_and_verify_max_len(self.model_config, self.max_length)
-        model_cls = get_model_class_for_task(self.task)
-
-        # device_map = "auto" enables model parallelism but all model architcture dont support it.
-        # For pre-check we initialize the model class without weights to check the `_no_split_modules`
-        # device_map = "auto" for models that support this else set to either cuda/cpu
-        with init_empty_weights():
-            self._model = model_cls.from_config(
-                self.model_config, trust_remote_code=self.trust_remote_code
-            )
-
-        device_map = self._device
-
-        if self._model._no_split_modules:
-            device_map = "auto"
-
-        tokenizer_kwargs = {}
-        model_kwargs = {}
-
-        if self.trust_remote_code:
-            model_kwargs["trust_remote_code"] = True
-            tokenizer_kwargs["trust_remote_code"] = True
-
-        model_kwargs["torch_dtype"] = self.dtype
-
-        # load huggingface tokenizer
-        self._tokenizer = AutoTokenizer.from_pretrained(
-            str(model_id_or_path),
-            revision=self.tokenizer_revision,
-            do_lower_case=self.do_lower_case,
-            **tokenizer_kwargs,
-        )
-        logger.info("Successfully loaded tokenizer")
-
-        # load huggingface model using from_pretrained for inference mode
-        if not self.predictor_host:
-            self._model = model_cls.from_pretrained(
-                model_id_or_path,
-                revision=self.model_revision,
-                device_map=device_map,
-                **model_kwargs,
-            )
-            self._model.eval()
-            self._model.to(self._device)
-            if not self._tokenizer.pad_token:
-                pad_token_str = "[PAD]"
-                logger.warning(
-                    f"Tokenizer does not have a padding token defined. Adding fall back pad token `{pad_token_str}`"
-                )
-                # Add fallback pad token [PAD]
-                self._tokenizer.add_special_tokens({"pad_token": pad_token_str})
-                # When adding new tokens to the vocabulary, we should make sure to also resize the token embedding
-                # matrix of the model so that its embedding matrix matches the tokenizer.
-                self._model.resize_token_embeddings(len(self._tokenizer))
-            logger.info(
-                f"Successfully loaded huggingface model from path {model_id_or_path}"
-            )
-        self.ready = True
-        return self.ready
 
     def preprocess(
         self,
@@ -353,6 +220,15 @@ class HuggingfaceEncoderModel(
                 prompt=prompt,
             )
 
+
+class HuggingfaceEncoderOpenAIModel(OpenAIEmbeddingModel):  # pylint:disable=c-extension-no-member
+    def __init__(
+        self,
+        model_name: str,
+    ):
+        super().__init__(model_name)
+
+    
     async def create_embedding(self, request: EmbeddingRequest) -> Embedding:
         params = request.params
 
@@ -417,3 +293,145 @@ class HuggingfaceEncoderModel(
                 total_tokens=num_input_tokens,
             ),
         )
+
+
+
+class HuggingfaceEncoderModel(HuggingfaceEncoderV2Model, HuggingfaceEncoderOpenAIModel):  # pylint:disable=c-extension-no-member
+    task: MLTask
+    model_config: PretrainedConfig
+    model_id_or_path: Union[pathlib.Path, str]
+    do_lower_case: bool
+    add_special_tokens: bool
+    max_length: Optional[int]
+    tensor_input_names: Optional[str]
+    return_token_type_ids: Optional[bool]
+    model_revision: Optional[str]
+    tokenizer_revision: Optional[str]
+    trust_remote_code: bool
+    ready: bool = False
+    _tokenizer: PreTrainedTokenizerBase
+    _model: Optional[PreTrainedModel] = None
+    _device: torch.device
+
+    def __init__(
+        self,
+        model_name: str,
+        model_id_or_path: Union[pathlib.Path, str],
+        model_config: Optional[PretrainedConfig] = None,
+        task: Optional[MLTask] = None,
+        do_lower_case: bool = False,
+        add_special_tokens: bool = True,
+        max_length: Optional[int] = None,
+        dtype: torch.dtype = torch.float32,
+        tensor_input_names: Optional[str] = None,
+        return_token_type_ids: Optional[bool] = None,
+        model_revision: Optional[str] = None,
+        tokenizer_revision: Optional[str] = None,
+        trust_remote_code: bool = False,
+        return_probabilities: bool = False,
+        predictor_config: Optional[PredictorConfig] = None,
+        request_logger: Optional[RequestLogger] = None,
+    ):
+        super().__init__(model_name, predictor_config)
+        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model_id_or_path = model_id_or_path
+        self.do_lower_case = do_lower_case
+        self.add_special_tokens = add_special_tokens
+        self.max_length = max_length
+        self.dtype = dtype
+        self.tensor_input_names = tensor_input_names
+        self.return_token_type_ids = return_token_type_ids
+        self.model_revision = model_revision
+        self.tokenizer_revision = tokenizer_revision
+        self.trust_remote_code = trust_remote_code
+        self.return_probabilities = return_probabilities
+        self.request_logger = request_logger
+
+        if model_config:
+            self.model_config = model_config
+        else:
+            self.model_config = AutoConfig.from_pretrained(
+                self.model_id_or_path, trust_remote_code=self.trust_remote_code
+            )
+
+        if task:
+            self.task = task
+            try:
+                inferred_task = infer_task_from_model_architecture(self.model_config)
+            except ValueError:
+                inferred_task = None
+            if inferred_task is not None and inferred_task != task:
+                logger.warning(
+                    f"Inferred task is '{inferred_task.name}' but"
+                    f" task is explicitly set to '{self.task.name}'"
+                )
+        else:
+            self.task = infer_task_from_model_architecture(self.model_config)
+
+        if is_generative_task(self.task):
+            raise RuntimeError(
+                f"Encoder model does not support generative task: {self.task.name}"
+            )
+        
+
+    def load(self) -> bool:
+        model_id_or_path = self.model_id_or_path
+
+        self.max_length = _get_and_verify_max_len(self.model_config, self.max_length)
+        model_cls = get_model_class_for_task(self.task)
+
+        # device_map = "auto" enables model parallelism but all model architcture dont support it.
+        # For pre-check we initialize the model class without weights to check the `_no_split_modules`
+        # device_map = "auto" for models that support this else set to either cuda/cpu
+        with init_empty_weights():
+            self._model = model_cls.from_config(
+                self.model_config, trust_remote_code=self.trust_remote_code
+            )
+
+        device_map = self._device
+
+        if self._model._no_split_modules:
+            device_map = "auto"
+
+        tokenizer_kwargs = {}
+        model_kwargs = {}
+
+        if self.trust_remote_code:
+            model_kwargs["trust_remote_code"] = True
+            tokenizer_kwargs["trust_remote_code"] = True
+
+        model_kwargs["torch_dtype"] = self.dtype
+
+        # load huggingface tokenizer
+        self._tokenizer = AutoTokenizer.from_pretrained(
+            str(model_id_or_path),
+            revision=self.tokenizer_revision,
+            do_lower_case=self.do_lower_case,
+            **tokenizer_kwargs,
+        )
+        logger.info("Successfully loaded tokenizer")
+
+        # load huggingface model using from_pretrained for inference mode
+        if not self.predictor_host:
+            self._model = model_cls.from_pretrained(
+                model_id_or_path,
+                revision=self.model_revision,
+                device_map=device_map,
+                **model_kwargs,
+            )
+            self._model.eval()
+            if not self._tokenizer.pad_token:
+                pad_token_str = "[PAD]"
+                logger.warning(
+                    f"Tokenizer does not have a padding token defined. Adding fall back pad token `{pad_token_str}`"
+                )
+                # Add fallback pad token [PAD]
+                self._tokenizer.add_special_tokens({"pad_token": pad_token_str})
+                # When adding new tokens to the vocabulary, we should make sure to also resize the token embedding
+                # matrix of the model so that its embedding matrix matches the tokenizer.
+                self._model.resize_token_embeddings(len(self._tokenizer))
+            logger.info(
+                f"Successfully loaded huggingface model from path {model_id_or_path}"
+            )
+        self.ready = True
+        return self.ready
