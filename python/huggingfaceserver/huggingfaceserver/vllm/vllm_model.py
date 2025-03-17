@@ -28,6 +28,8 @@ from kserve.protocol.rest.openai.types import (
     EmbeddingRequest,
     Embedding,
     ErrorResponse,
+    RerankRequest,
+    Rerank,
 )
 
 from vllm import AsyncEngineArgs
@@ -36,6 +38,7 @@ from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.openai.serving_completion import OpenAIServingCompletion
 from vllm.entrypoints.openai.serving_chat import OpenAIServingChat
 from vllm.entrypoints.openai.serving_embedding import OpenAIServingEmbedding
+from vllm.entrypoints.openai.serving_rerank import JinaAIServingRerank
 from vllm.entrypoints.openai.tool_parsers import ToolParserManager
 from vllm.entrypoints.openai.serving_models import BaseModelPath, OpenAIServingModels
 from vllm.entrypoints.openai.api_server import (
@@ -159,6 +162,15 @@ class VLLMModel(
                 else None
             )
 
+            self.serving_reranking = (
+                JinaAIServingRerank(
+                    self.engine_client,
+                    self.model_config,
+                    self.openai_serving_models,
+                    request_logger=self.request_logger
+                ) if self.model_config.task == "score" else None
+            )
+
         self.ready = True
         return self.ready
 
@@ -226,6 +238,26 @@ class VLLMModel(
         context: Optional[Dict[str, Any]] = None,
     ) -> Union[AsyncGenerator[str, None], Embedding, ErrorResponse]:
         response = await self.openai_serving_embedding.create_embedding(
+            request, raw_request
+        )
+
+        if isinstance(response, engineError):
+            return create_error_response(
+                message=response.message,
+                err_type=response.type,
+                param=response.param,
+                status_code=HTTPStatus(response.code),
+            )
+
+        return response
+
+    async def create_rerank(
+        self,
+        request: RerankRequest,
+        raw_request: Optional[Request] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Union[AsyncGenerator[str, None], Rerank, ErrorResponse]:
+        response = await self.serving_reranking.do_rerank(
             request, raw_request
         )
 
